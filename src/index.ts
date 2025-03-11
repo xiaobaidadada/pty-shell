@@ -218,7 +218,7 @@ export class PtyShell implements PtyShellUserMethod {
 
     public close(): void {
         this.is_running = false;
-        this.close_child(-1);
+        this.close_child(0);
     }
 
     public kill(): void {
@@ -619,7 +619,7 @@ export class PtyShell implements PtyShellUserMethod {
                     this.cancel_selected();
                     this.update_line({line_add_num: 1});
                 } else if (this.child) {
-                    this.close_child(-1);
+                    this.close_child(0);
                     return;
                 }
             }
@@ -819,7 +819,7 @@ export class PtyShell implements PtyShellUserMethod {
                         break;
                     default:
                         // 未知的不报错也不执行
-                        this.exec_end_call(-1);
+                        this.exec_end_call(0);
                         return;
                 }
             }
@@ -898,7 +898,7 @@ export class PtyShell implements PtyShellUserMethod {
                 this.on_call(data.toString());
             });
             this.child.onExit(({exitCode, signal}) => {
-                this.close_child(-1);
+                this.close_child(exitCode);
                 this.send_and_enter("");
                 // this.send_and_enter(`pty with ${exitCode}`);
                 this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
