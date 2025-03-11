@@ -898,8 +898,8 @@ export class PtyShell implements PtyShellUserMethod {
                 this.on_call(data.toString());
             });
             this.child.onExit(({exitCode, signal}) => {
-                this.send_and_enter("");
                 this.close_child(-1);
+                this.send_and_enter("");
                 // this.send_and_enter(`pty with ${exitCode}`);
                 this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
             })
