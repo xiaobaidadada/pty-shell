@@ -1,0 +1,39 @@
+{
+  "name": "pty-shell",
+  "version": "1.0.3",
+  "description": "a virtual PTY shell for javaScript",
+  "author": "xiaobaidadada",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:xiaobaidadada/pty-shell.git"
+  },
+  "homepage": "https://github.com/xiaobaidadada/pty-shell",
+  "bugs": {
+    "url": "https://github.com/xiaobaidadada/pty-shell/issues"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.5.3"
+  },
+  "files": [
+    "dist/**/*",
+    "LICENSE.txt",
+    "README.md",
+    "package.json"
+  ],
+  "keywords":[
+    "pty",
+    "shell",
+    "tty",
+    "terminal",
+    "browser",
+    "web",
+    "virtual",
+    "command intercept"
+  ]
+}
