@@ -1,4 +1,4 @@
-import path from "path";
+import * as path from "path";
 import {exec_type, PtyShell} from "../src";
 
 const green = '\x1b[32m';  // 绿色

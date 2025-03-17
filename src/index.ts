@@ -408,8 +408,11 @@ export class PtyShell implements PtyShellUserMethod {
         if (this.child) {
             // SystemUtil.killProcess(this.child.pid);
             const pid = this.child.pid;
-            this.child.kill(); // 不同平台信号不同 win 默认 SIGHUP
-            this.exec_end_call(code,pid);
+            if (this.on_child_kill) {
+                this.exec_end_call(code,pid);
+            } else {
+                this.child.kill(); // 不同平台信号不同 win 默认 SIGHUP
+            }
             this.child = undefined;
         }
     }
