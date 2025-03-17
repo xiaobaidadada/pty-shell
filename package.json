@@ -1,6 +1,6 @@
 {
   "name": "pty-shell",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "a virtual PTY shell for javaScript",
   "author": "xiaobaidadada",
   "main": "dist/index.js",
