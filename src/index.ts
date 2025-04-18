@@ -92,6 +92,8 @@ interface Param extends Partial<PtyShellUserMethod> {
     rows?: number,
     env?: any,
     node_pty_shell_list?: string[], // 一些必须用 node_pty 来执行的命令
+    history_line?: string[] ,
+    history_line_max?:number,
 }
 
 type CmdHandler = (params: string[], send_prompt?: (data: string) => void) => void;
@@ -197,6 +199,7 @@ export class PtyShell implements PtyShellUserMethod {
 
     private history_line: string[] = [];
     private history_line_index = -1;
+    private history_line_max = 20;
 
     /**
      * public method
@@ -772,7 +775,7 @@ export class PtyShell implements PtyShellUserMethod {
             return; // 和最后的一样就不插入了
         }
         this.history_line.push(line);
-        if (this.history_line.length > 20) {
+        if (this.history_line.length > this.history_line_max) {
             this.history_line.shift(); // 删除最前面的
         }
         this.history_line_index = -1;
