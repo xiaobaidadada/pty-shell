@@ -159,6 +159,8 @@ export class PtyShell implements PtyShellUserMethod {
     public on_call = (data: string) => {
     };
 
+    public on_call_child_raw ?: (data: string) => void;
+
     public on_control_cmd = (type: exec_cmd_type, data?: string) => {
     }
 
@@ -902,6 +904,9 @@ export class PtyShell implements PtyShellUserMethod {
             });
             this.child.onData((data) => {
                 this.on_call(data.toString());
+                if(this.on_call_child_raw) {
+                    this.on_call_child_raw(data);
+                }
             });
             this.child.onExit(({exitCode, signal}) => {
                 this.close_child(exitCode);
@@ -927,11 +932,17 @@ export class PtyShell implements PtyShellUserMethod {
             this.child.stdout.on('data', (data) => {
                 // const v = data.toString(); // 子程序没有换行等符号不会立即输出 有缓冲区
                 this.send_and_enter(data.toString());
+                if(this.on_call_child_raw) {
+                    this.on_call_child_raw(data);
+                }
             });
             this.child.stderr.on('data', (data) => {
                 // const v = data.toString();
                 this.send_and_enter(data.toString());
                 this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                if(this.on_call_child_raw) {
+                    this.on_call_child_raw(data);
+                }
             });
             this.child.on('exit', (code) => {
                 this.close_child(code);
