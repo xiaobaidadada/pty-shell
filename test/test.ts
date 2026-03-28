@@ -29,5 +29,9 @@ ptyShell.cmd_replace = async (exe,params)=>{
     }
     return {exe_cmd: exe,params}
 }
+ptyShell.add_cmd_handle("okk",async (params,send)=>{
+    send("okk")
+})
 ptyShell.write("ok1 .. \r");
+ptyShell.write("okk 11");
 

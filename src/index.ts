@@ -96,7 +96,7 @@ interface Param extends Partial<PtyShellUserMethod> {
     history_line_max?:number,
 }
 
-type CmdHandler = (params: string[], send_prompt?: (data: string) => void) => void;
+type CmdHandler = (params: string[], send_prompt?: (data: string) => void) => Promise<void>;
 
 interface PtyShellMethod {
     reset_option: (param: Param) => void;
@@ -840,12 +840,10 @@ export class PtyShell implements PtyShellUserMethod {
             }
             if (this.cmd_set.has(exe)) {
                 // 检测某个已经有预处理的命令 包括用户自定义的
-                if (this.exec_cmd(exe, params)) {
-                    // 成功执行了不用再继续了
-                    this.clear_line();
-                    this.exec_end_call(0);
-                    return;
-                }
+                await this.exec_cmd(exe, params)
+                // 不用再继续了
+                this.clear_line();
+                this.exec_end_call(0);
             }
             this.spawn(exe, params, use_noe_pty);
             this.clear_line();
@@ -968,12 +966,12 @@ export class PtyShell implements PtyShellUserMethod {
         }
     }
 
-    private exec_cmd(exe: string, params: string[]) {
+    private async exec_cmd(exe: string, params: string[]) {
         try {
             const handle = this.cmd_exec_map.get(exe);
             if (exe !== 'cd' && handle) {
                 // 如果用户有了就用用户的 不用系统自己的 但是 cd 命令排除在外
-                handle(params, (data: string) => {
+                await handle(params, (data: string) => {
                     this.send_and_enter(data, true)
                 });
                 return true;
