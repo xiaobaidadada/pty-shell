@@ -23,5 +23,11 @@ const ptyShell = new PtyShell({
     },
     on_prompt_call
 });
-ptyShell.write("cd .. \r");
+ptyShell.cmd_replace = async (exe,params)=>{
+    if(exe === "ok1") {
+        exe = "cd"
+    }
+    return {exe_cmd: exe,params}
+}
+ptyShell.write("ok1 .. \r");
 

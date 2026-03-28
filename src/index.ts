@@ -167,7 +167,9 @@ export class PtyShell implements PtyShellUserMethod {
 
     public on_child_kill?: (code:number,pid?:number) => void;
 
-    public check_exe_cmd;
+    public check_exe_cmd?: (exe_cmd:string, params:string[])=>Promise<exec_type>;
+
+    public cmd_replace?: (exe_cmd:string, params:string[])=>Promise<{exe_cmd:string, params:string[]}>; // 在 check_exe_cmd 后
 
     private cmd_set = new Set(cmd_list);
 
@@ -807,7 +809,7 @@ export class PtyShell implements PtyShellUserMethod {
             this.clear_line();
             return;
         }
-        const {exe, params} = this.get_exec(this.line);
+        let {exe, params} = this.get_exec(this.line);
         this.history_line_index = -1;
         try {
             let use_noe_pty = false;
@@ -830,6 +832,11 @@ export class PtyShell implements PtyShellUserMethod {
                         this.exec_end_call(0);
                         return;
                 }
+            }
+            if(this.cmd_replace) {
+                const  r = await this.cmd_replace(exe, params);
+                exe = r.exe_cmd
+                params = r.params;
             }
             if (this.cmd_set.has(exe)) {
                 // 检测某个已经有预处理的命令 包括用户自定义的
