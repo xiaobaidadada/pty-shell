@@ -844,6 +844,7 @@ export class PtyShell implements PtyShellUserMethod {
                 // 不用再继续了
                 this.clear_line();
                 this.exec_end_call(0);
+                return;
             }
             this.spawn(exe, params, use_noe_pty);
             this.clear_line();
