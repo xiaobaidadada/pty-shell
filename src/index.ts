@@ -11,7 +11,14 @@
 
 
 import {word_detection_js} from "./word_detection_js";
-import {get_best_cmd, path_join} from "./path_util";
+import {get_best_cmd} from "./path_util";
+import {CharUtil} from "./char.util";
+import * as child_process from "node:child_process";
+import {child_func_constructor, child_func_type} from "./type";
+
+const fs = require("fs");
+const path = require("path");
+// const child_process = require("child_process");
 // import {SystemUtil} from "../sys/sys.utl";
 
 /**
@@ -24,7 +31,7 @@ import {get_best_cmd, path_join} from "./path_util";
  * 6. 使用了shell: true 参数 系统的默认shell可以支持管道等操作，还可以支持程序路劲查找的功能 但是这样无法支持 | 这样左边命令的校验了， todo 暂时取消这个功能。以后再添加 不能使用原生的shell因为不知道会有什么特殊语法从而跳过命令校验
  */
 
-const cmd_list = ['ls', 'cd', 'pwd']; // 仅支持这三个内置命令 cd 命令是唯一支持参数的
+// const cmd_list = ['ls', 'cd', 'pwd']; // 仅支持这三个内置命令 cd 命令是唯一支持参数的
 
 
 /**
@@ -86,7 +93,7 @@ interface PtyShellUserMethod {
 
 interface Param extends Partial<PtyShellUserMethod> {
     cwd: string, // 工作目录
-    not_use_node_pre_cmd_exec?: boolean, // 不是使用node预先定义的功能 可以用于浏览器
+    // not_use_node_pre_cmd_exec?: boolean, // 不是使用node预先定义的功能 可以用于浏览器
     node_pty?: any; // 如果传入了 node_pty 则可以使用node-pty来执行 shell 命令
     cols?: number,
     rows?: number,
@@ -96,18 +103,7 @@ interface Param extends Partial<PtyShellUserMethod> {
     history_line_max?:number,
 }
 
-type CmdHandler = (params: string[], send_prompt?: (data: string) => void) => Promise<void>;
-
-interface PtyShellMethod {
-    reset_option: (param: Param) => void;
-    add_cmd_handle: (exe_cmd: string, handle: CmdHandler) => void;
-    close(): void;
-    kill(): void;
-    write(data:string):Promise<void>;
-
-    //util
-    cols_handle(str:string):string[];
-}
+type CmdHandler = (params: string[], send_prompt?: (str: string, send_prompt?:boolean) => void) => Promise<void>;
 
 export class PtyShell implements PtyShellUserMethod {
 
@@ -118,21 +114,30 @@ export class PtyShell implements PtyShellUserMethod {
 
     constructor(param: Param) {
         this.reset_option(param);
-        if (!this.not_use_node_pre_cmd_exec) {
-            this.node_require.fs = require("fs");
-            this.node_require.path = require("path");
-            this.node_require.child_process = require('child_process');
-        }
         this.on_call(this.raw_prompt);
+        // 添加自定义处理方法
+        this.add_cmd_handle("pwd",async (params,send)=> {
+            this.send_and_enter(`${this.cwd}`);
+        })
+        this.add_cmd_handle("cd",async (params,send)=> {
+            const p= path.isAbsolute(params[0]) ? params[0] : path.join(this.cwd, params[0]);
+            if (!fs.existsSync(p)) {
+                this.send_and_enter(`not directory ${p}`);
+            }
+            this.cwd = p;
+            this.send_and_enter(``);
+            this.word_detection = undefined; // 清空检测器
+        })
+        this.add_cmd_handle("ls",async (params,send)=> {
+            const items = fs.readdirSync(params?.[0]??this.cwd);// 读取目录内容
+            const v = this.cols_handle(" " + items.join("  "));
+            this.send_and_enter(v);
+        })
     }
 
     // cmd 命令 参数预测 只要是参数都可能是本目录下的文件名所以可以检测一下
     public cmd_params_auto_completion(param_str): string | undefined {
-        // 这里的默认实现是开启了使用 node
-        if (this.not_use_node_pre_cmd_exec) {
-            return;
-        }
-        const items = this.node_require.fs.readdirSync(this.cwd);// 读取目录内容
+        const items = fs.readdirSync(this.cwd);// 读取目录内容
         if (!this.word_detection) {
             this.word_detection = new word_detection_js();
             for (const item of items) {
@@ -149,11 +154,11 @@ export class PtyShell implements PtyShellUserMethod {
     }
 
     // cmd 命令 参数预测
-    public cmd_exe_auto_completion;
+    public cmd_exe_auto_completion:(str:string)=>string ;
 
     public on_prompt_call = (cwd) => {
         const str = `${cwd}:# `;
-        return {str, char_num: PtyShell.get_full_char_num(str)}
+        return {str, char_num: CharUtil.get_full_char_num(str)}
     }
 
     public on_call = (data: string) => {
@@ -171,14 +176,11 @@ export class PtyShell implements PtyShellUserMethod {
 
     public cmd_replace?: (exe_cmd:string, params:string[])=>Promise<{exe_cmd:string, params:string[]}>; // 在 check_exe_cmd 后
 
-    private cmd_set = new Set(cmd_list);
 
     private shell_set: Set<string>; // 支持 * 全部使用pty
 
-    private node_require = {} as { path: any, fs: any, child_process: any };
-
-    private not_use_node_pre_cmd_exec = false;
     private cmd_exec_map = new Map<string, CmdHandler>();
+    private js_child_map = new Map<string, child_func_constructor>();
 
 
     private prompt_call_len: number;
@@ -191,8 +193,11 @@ export class PtyShell implements PtyShellUserMethod {
     private word_detection: word_detection_js;
 
     private node_pty: any;
-    private child;
-    private is_pty: boolean = false;
+    // private is_pty: boolean = false;
+
+    private child:child_process.ChildProcess;
+    private node_pty_child:any
+    private js_func_child:child_func_type;
 
     private line = "";
     private line_index = -1; // 当前指针在 某个字符（后面)
@@ -220,8 +225,12 @@ export class PtyShell implements PtyShellUserMethod {
 
     public add_cmd_handle(exe_cmd: string, handle: CmdHandler) {
         this.cmd_exec_map.set(exe_cmd, handle);
-        this.cmd_set.add(exe_cmd);
     }
+
+    public add_js_child(name: string, child: child_func_constructor) {
+        this.js_child_map.set(name, child);
+    }
+
 
     public close(): void {
         this.is_running = false;
@@ -242,7 +251,7 @@ export class PtyShell implements PtyShellUserMethod {
         const list = [];
 
         let last_index = 0; // 上一次位置
-        let index = PtyShell.readFullCharIndex(str, 0, this.cols);
+        let index = CharUtil.readFullCharIndex(str, 0, this.cols);
         let count = 0;
         while (index < max_index) {
             if (count > max_index) break; // 防止错误的一直循环
@@ -253,20 +262,20 @@ export class PtyShell implements PtyShellUserMethod {
                     if (this.is_empty(str[f])) {
                         list.push(str.substring(last_index, f + 1));
                         last_index = f + 1;
-                        index = f + 1 + PtyShell.readFullCharIndex(str, f + 1, this.cols);
+                        index = f + 1 + CharUtil.readFullCharIndex(str, f + 1, this.cols);
                         continue;
                     }
                     if (f === last_index) {
                         // 最后一位 直接把本行全部添加进去
                         list.push(str.substring(last_index, index));
                         last_index = index;
-                        index = index + PtyShell.readFullCharIndex(str, index, this.cols);
+                        index = index + CharUtil.readFullCharIndex(str, index, this.cols);
                     }
                 }
             } else {
                 list.push(str.substring(last_index, index));
                 last_index = index;
-                index = index + PtyShell.readFullCharIndex(str, index + 1, this.cols);
+                index = index + CharUtil.readFullCharIndex(str, index + 1, this.cols);
             }
         }
         if (index >= max_index) {
@@ -280,7 +289,7 @@ export class PtyShell implements PtyShellUserMethod {
      * @param data
      */
     public async write(data: string) {
-        if (this.child && this.is_pty) {
+        if (this.have_child()) {
             // 终端shell 完全 托管给 别的程序
             this.spawn_write(data);
             return;
@@ -326,50 +335,7 @@ export class PtyShell implements PtyShellUserMethod {
         }
     }
 
-    /**
-     *  static method
-     */
 
-    // 判断一个字符是全角还是半角
-    public static isFullCharWidth(char) {
-        // 计算字符的 UTF-8 编码字节长度
-        const byteLength = Buffer.byteLength(char, 'utf8');
-
-        // 如果字符的字节长度大于 1，说明是全角字符
-        return byteLength > 1;
-    }
-
-    // 从start_index往前多少个位置获取指定数量的 半角 字符(宽字符算两个)
-    public static readFullCharIndex(str: string, start_index: number, len: number) {
-        if (!str) return 0;
-        if (start_index >= str.length) return 0;
-        let num = 0;
-        let char_num = 0;
-        for (let i = start_index; i < str.length; i++) {
-            if (this.isFullCharWidth(str[i])) {
-                num += 2;
-            } else {
-                num++;
-            }
-            char_num++;
-            if (num >= len) return char_num;
-        }
-        return char_num;
-    }
-
-    // 获取字符串中有多少个 字符（将宽字符统计成两个)
-    public static get_full_char_num(str: string) {
-        if (!str) return 0;
-        let char_num = 0;
-        for (let i = 0; i < str.length; i++) {
-            if (this.isFullCharWidth(str[i])) {
-                char_num += 2;
-            } else {
-                char_num++;
-            }
-        }
-        return char_num;
-    }
 
 
     /**
@@ -410,21 +376,34 @@ export class PtyShell implements PtyShellUserMethod {
         this.update_line({line_add_num: 1});
     }
 
-    private close_child(code) {
+    private close_child(code?:number) {
         this.child_now_line = '';
-        if (this.child) {
+        let child = this.child
+        if(this.node_pty_child) {
+            child = this.node_pty_child;
+        }
+        if (child) {
             // SystemUtil.killProcess(this.child.pid);
-            const pid = this.child.pid;
+            const pid = child.pid;
             if (this.on_child_kill) {
                 this.exec_end_call(code,pid);
             } else {
-                this.child.kill(); // 不同平台信号不同 win 默认 SIGHUP
+                child.kill(); // 不同平台信号不同 win 默认 SIGHUP
             }
-            this.child = undefined;
         }
+        if(this.js_func_child) {
+            this.js_func_child.kill()
+        }
+        this.child = undefined;
+        this.node_pty_child = null;
+        this.js_func_child = null;
     }
 
     private next_not_enter = false;
+
+    private have_child() {
+        return this.child != null || this.node_pty_child != null || this.js_func_child != null;
+    }
 
     private send_and_enter(str: string, send_prompt = false) {
         try {
@@ -447,7 +426,7 @@ export class PtyShell implements PtyShellUserMethod {
                 }
                 if (i === 0 || i !== last_i)
                     list.push(str.substring(i));
-                if (this.child) {
+                if (this.have_child()) {
                     // 添加子进程的提示换行
                     this.child_now_line = list[list.length - 1];
                 }
@@ -461,7 +440,7 @@ export class PtyShell implements PtyShellUserMethod {
                 }
                 this.next_not_enter = str.endsWith('\n\r') || str.endsWith('\r\n'); // 下一次不用换行了
             }
-            if (!this.child || send_prompt) {
+            if (!this.have_child() || send_prompt) {
                 this.on_call(`${this.enter_prompt}`);
             }
             this.clear_line();
@@ -479,7 +458,7 @@ export class PtyShell implements PtyShellUserMethod {
         p_line?: string
     }) {
         const prompt = !this.child ? this.raw_prompt : this.child_now_line;
-        let len = (!this.child ? this.prompt_call_len : PtyShell.get_full_char_num(prompt)) + this.line_char_index; // 字符串前面的字符数量
+        let len = (!this.child ? this.prompt_call_len : CharUtil.get_full_char_num(prompt)) + this.line_char_index; // 字符串前面的字符数量
         if (param && param.line_add_num) {
             len += param.line_add_num;
         } else if (param && param.line_reduce_num) {
@@ -507,7 +486,7 @@ export class PtyShell implements PtyShellUserMethod {
 
     private get line_char_index() {
         if (this.line_index === -1) return 0;
-        return PtyShell.get_full_char_num(this.line.substring(0, this.line_index + 1));
+        return CharUtil.get_full_char_num(this.line.substring(0, this.line_index + 1));
     }
 
     private ctrl_exec(str: string) {
@@ -566,7 +545,7 @@ export class PtyShell implements PtyShellUserMethod {
                     break;
                 }
                 this.line_index++;
-                const len = PtyShell.get_full_char_num(this.line[this.line_index]);
+                const len = CharUtil.get_full_char_num(this.line[this.line_index]);
                 if (this.select_line) {
                     this.update_line({line_add_num: 1});
                     break;
@@ -580,7 +559,7 @@ export class PtyShell implements PtyShellUserMethod {
                 if (this.line_index === -1) {
                     break;
                 }
-                const len = PtyShell.get_full_char_num(this.line[this.line_index]);
+                const len = CharUtil.get_full_char_num(this.line[this.line_index]);
                 this.line_index--;
                 if (this.select_line) {
                     this.update_line({line_add_num: 1});
@@ -793,22 +772,12 @@ export class PtyShell implements PtyShellUserMethod {
     // 解析和执行命令 执行完会自动换行的
     private async parse_exec() {
         // const line = this.delete_all_enter(this.line);
-        if (!this.line && !this.child) {
+        if (!this.line && !this.have_child()) {
             this.send_and_enter("");
             this.clear_line();
             return;
         }
         this.push_history_line(this.line);
-        if (this.child && this.is_pty) {
-            // 终端shell 完全 托管给 别的程序
-            this.spawn_write(`${this.line}\r`);
-            return;
-        } else if (this.child) {
-            // 把数据给正在运行的别的程序
-            this.spawn_write(`${this.line}\n`);
-            this.clear_line();
-            return;
-        }
         let {exe, params} = this.get_exec(this.line);
         this.history_line_index = -1;
         try {
@@ -838,12 +807,23 @@ export class PtyShell implements PtyShellUserMethod {
                 exe = r.exe_cmd
                 params = r.params;
             }
-            if (this.cmd_set.has(exe)) {
+            if (this.cmd_exec_map.has(exe)) {
                 // 检测某个已经有预处理的命令 包括用户自定义的
                 await this.exec_cmd(exe, params)
                 // 不用再继续了
                 this.clear_line();
                 this.exec_end_call(0);
+                return;
+            }
+            if(this.js_child_map.has(exe)) {
+                const c_ =  this.js_child_map.get(exe);
+                this.js_func_child = new c_(()=>{
+                    this.send_and_enter("");
+                    this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                    this.close_child()
+                }, (str)=>{
+                    this.on_call(str)
+                },params)
                 return;
             }
             this.spawn(exe, params, use_noe_pty);
@@ -877,18 +857,21 @@ export class PtyShell implements PtyShellUserMethod {
 
 
     private spawn_write(str: string) {
-        if (this.is_pty) {
-            this.child.write(str);
-        } else {
+        if (this.node_pty_child) {
+            this.node_pty_child.write(str);
+            // this.child.write(str);
+        } else if (this.child) {
             this.child.stdin.write(str);
+        } else if (this.js_func_child) {
+            this.js_func_child.write(str);
         }
     }
 
-    private spawn(exe: string, params: string[], use_noe_pty = true, spawn_option?: any) {
-        if (this.not_use_node_pre_cmd_exec) {
-            this.send_and_enter(`not_use_node_pre_cmd_exec is true`);
-            return;
-        }
+    private spawn(exe: string, params: string[], use_noe_pty = true) {
+        // if (this.not_use_node_pre_cmd_exec) {
+        //     this.send_and_enter(`not_use_node_pre_cmd_exec is true`);
+        //     return;
+        // }
         // this.send_and_enter(""); //
         // if (!this.child) {
         //     this.on_call(`\n\r`); // 先换个行
@@ -898,7 +881,7 @@ export class PtyShell implements PtyShellUserMethod {
             //     exe += '.exe';
             // }
             this.on_call(`\n\r`); // 先换个行
-            this.child = this.node_pty.spawn(exe, params, {
+            this.node_pty_child = this.node_pty.spawn(exe, params, {
                 name: 'xterm-color',
                 cols: this.cols,
                 rows: this.rows,
@@ -906,32 +889,30 @@ export class PtyShell implements PtyShellUserMethod {
                 useConptyDll: false,
                 useConpty: process.env.NODE_ENV !== "production" ? false : undefined,// conpty 可以支持 bash 等命令 从 Windows 10 版本 1809 开始提供 ， 但是如果使用了 powershell 这个也就没有必要了，而且设置为false才能使用debug模式运行
                 env: {...process.env, ...this.env}, // 传递环境变量
-                ...spawn_option
             });
-            this.child.onData((data) => {
+            this.node_pty_child.onData((data) => {
                 this.on_call(data.toString());
                 if(this.on_call_child_raw) {
                     this.on_call_child_raw(data);
                 }
             });
-            this.child.onExit(({exitCode, signal}) => {
+            this.node_pty_child.onExit(({exitCode, signal}) => {
                 this.close_child(exitCode);
                 this.send_and_enter("");
                 // this.send_and_enter(`pty with ${exitCode}`);
                 this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
             })
-            this.is_pty = true;
+            // this.is_pty = true;
         } else {
-            this.is_pty = false;
+            // this.is_pty = false;
             // 其他的没有必要再创建一个 tty 都是资源消耗
-            this.child = this.node_require.child_process.spawn(exe, params, {
+            this.child = child_process.spawn(exe, params, {
                 // shell:getShell(),
                 cwd: this.cwd,    // 设置子进程的工作目录
                 env: {...process.env, ...this.env, LANG: 'en_US.UTF-8'}, // 传递环境变量
                 // stdio: 'inherit'  // 让子进程的输入输出与父进程共享 pipe ignore inherit
                 // timeout: 5000,      // 设置超时为 5 秒
-                maxBuffer: 1024 * 1024 * 10,// 设置缓冲区为 10 MB
-                ...spawn_option
+                // maxBuffer: 1024 * 1024 * 10// 设置缓冲区为 10 MB
             });
             // 设置编码为 'utf8'，确保输出按 UTF-8 编码解析
             this.child.stdout.setEncoding('utf8');
@@ -970,51 +951,17 @@ export class PtyShell implements PtyShellUserMethod {
     private async exec_cmd(exe: string, params: string[]) {
         try {
             const handle = this.cmd_exec_map.get(exe);
-            if (exe !== 'cd' && handle) {
-                // 如果用户有了就用用户的 不用系统自己的 但是 cd 命令排除在外
-                await handle(params, (data: string) => {
-                    this.send_and_enter(data, true)
+            if (handle) {
+                // 如果用户有了就用用户的 不用系统自己的
+                await handle(params, (data: string,enter) => {
+                    this.send_and_enter(data, enter)
                 });
                 return true;
             }
-            switch (exe) {
-                case 'pwd': {
-                    this.send_and_enter(`${this.cwd}`);
-                }
-                    return true;
-                case 'cd': {
-                    let p;
-                    if (!this.not_use_node_pre_cmd_exec) {
-                        // 有node环境可以检测一下
-                        p = this.node_require.path.isAbsolute(params[0]) ? params[0] : this.node_require.path.join(this.cwd, params[0]);
-                        if (!this.node_require.fs.existsSync(p)) {
-                            this.send_and_enter(`not directory ${p}`);
-                        }
-                    } else {
-                        // 没有node环境只能这样了 todo 对于 .. 路径有问题
-                        p = path_join(this.cwd, params[0]);
-                    }
-                    this.cwd = p;
-                    this.send_and_enter(``);
-                    this.word_detection = undefined; // 清空检测器
-                }
-                    return true;
-                case 'ls': {
-                    if (this.not_use_node_pre_cmd_exec) {
-                        return false; // 让其它方式处理
-                    }
-                    const items = this.node_require.fs.readdirSync(this.cwd);// 读取目录内容
-                    const v = this.cols_handle(" " + items.join("  "));
-                    this.send_and_enter(v);
-                }
-                    return true;
-                default:
-                    return false; // 让其它方式处理
-            }
+
         } catch (e) {
-            this.send_and_enter(JSON.stringify(e));
+            this.send_and_enter(e?.message??e);
         }
-        return false; // 让其它方式处理
     }
 
 
@@ -1137,3 +1084,9 @@ export class PtyShell implements PtyShellUserMethod {
     }
 
 }
+
+
+export * from "./type"
+export * from "./char.util";
+export * from "./path_util";
+export * from "./word_detection_js";

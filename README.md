@@ -1,7 +1,7 @@
 # pty-shell
 This is a virtual PTY shell that can be used to filter or log executable commands. It can also be used in a browser environment. Currently, it does not support features like piping. It supports the use of `node-pty`. For more usage examples, you can refer to the code in the [filecat](https://github.com/xiaobaidadada/filecat) project.
 It needs to be used in combination with projects similar to xterm.js.
-这是一个虚拟的pty shell ，可以用来过滤或者记录可执行命令， 并可以用于浏览器环境， 目前并不支持管道等功能，支持使用 node-pty ，更多使用例子目前可以参考 filecat(https://github.com/xiaobaidadada/filecat)项目中的代码 。 
+这是一个虚拟的pty shell ，可以用来过滤或者记录可执行命令， 只支持node环境，不支持浏览器， 目前并不支持管道等功能，支持使用 node-pty ，更多使用例子目前可以参考 filecat(https://github.com/xiaobaidadada/filecat)项目中的代码 。 
 需要配合  xterm.js 类似的项目组合使用
 # Sample Example
 ```js
