@@ -43,11 +43,10 @@ const ptyShell = new PtyShell({
 class atest {
     exit
     print
-    constructor(exit:()=>void,print:(str: string) => void,params:string[]) {
+    constructor(pty_shell:PtyShell,exit:()=>void,print:(str: string) => void,params:string[]) {
         this.exit = exit;
         this.print = print;
-        this.print("新程序")
-        this.exit()
+        // this.exit()
     }
 
     write(str: string) {
@@ -58,9 +57,16 @@ class atest {
 
     }
 
-}
-ptyShell.add_js_child("aaa",atest)
+    init() {
+        this.print("新程序")
+    }
 
-ptyShell.write("aaa \r")
+}
+// ptyShell.add_js_child("aaa",atest)
+//
+// ptyShell.write("aaa \r")
+// ptyShell.write("node -i\r")
 // ptyShell.write("aaann \r")
 // ptyShell.write(" ls \r")
+
+ptyShell.write("cd ..\r")

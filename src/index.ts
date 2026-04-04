@@ -123,6 +123,7 @@ export class PtyShell implements PtyShellUserMethod {
             const p= path.isAbsolute(params[0]) ? params[0] : path.join(this.cwd, params[0]);
             if (!fs.existsSync(p)) {
                 this.send_and_enter(`not directory ${p}`);
+                return
             }
             this.cwd = p;
             this.send_and_enter(``);
@@ -210,6 +211,17 @@ export class PtyShell implements PtyShellUserMethod {
     private history_line_index = -1;
     private history_line_max = 20;
 
+    private _not_write = false;
+
+    get not_write(): boolean {
+        return this._not_write
+    }
+
+    set not_write(value: boolean) {
+        this._not_write = value;
+    }
+
+
     /**
      * public method
      */
@@ -289,8 +301,9 @@ export class PtyShell implements PtyShellUserMethod {
      * @param data
      */
     public async write(data: string) {
-        if (this.have_child()) {
-            // 终端shell 完全 托管给 别的程序
+        if(this._not_write) return;
+        if (this.node_pty_child != null) {
+            // 终端shell 完全 托管给 别的程序 只有 pty 的子程序可以 其他 需要pty-shell充当编辑器
             this.spawn_write(data);
             return;
         }
@@ -407,6 +420,7 @@ export class PtyShell implements PtyShellUserMethod {
 
     private send_and_enter(str: string, send_prompt = false) {
         try {
+            const have_child = this.have_child();
             if (typeof str == "string") {
                 const list = [];
                 let i = 0;
@@ -426,7 +440,7 @@ export class PtyShell implements PtyShellUserMethod {
                 }
                 if (i === 0 || i !== last_i)
                     list.push(str.substring(i));
-                if (this.have_child()) {
+                if (have_child) {
                     // 添加子进程的提示换行
                     this.child_now_line = list[list.length - 1];
                 }
@@ -440,7 +454,7 @@ export class PtyShell implements PtyShellUserMethod {
                 }
                 this.next_not_enter = str.endsWith('\n\r') || str.endsWith('\r\n'); // 下一次不用换行了
             }
-            if (!this.have_child() || send_prompt) {
+            if (!have_child || send_prompt) {
                 this.on_call(`${this.enter_prompt}`);
             }
             this.clear_line();
@@ -457,8 +471,9 @@ export class PtyShell implements PtyShellUserMethod {
         line_reduce_num?: number,
         p_line?: string
     }) {
-        const prompt = !this.child ? this.raw_prompt : this.child_now_line;
-        let len = (!this.child ? this.prompt_call_len : CharUtil.get_full_char_num(prompt)) + this.line_char_index; // 字符串前面的字符数量
+        const have_child = this.have_child();
+        const prompt = !have_child ? this.raw_prompt : this.child_now_line;
+        let len = (!have_child? this.prompt_call_len : CharUtil.get_full_char_num(prompt)) + this.line_char_index; // 字符串前面的字符数量
         if (param && param.line_add_num) {
             len += param.line_add_num;
         } else if (param && param.line_reduce_num) {
@@ -607,7 +622,7 @@ export class PtyShell implements PtyShellUserMethod {
                     this.on_control_cmd(exec_cmd_type.copy_text, this.select_line);
                     this.cancel_selected();
                     this.update_line({line_add_num: 1});
-                } else if (this.child) {
+                } else if (this.have_child()) {
                     this.close_child(0);
                     return;
                 }
@@ -778,6 +793,12 @@ export class PtyShell implements PtyShellUserMethod {
             return;
         }
         this.push_history_line(this.line);
+        if (this.have_child()) {
+            // 把数据给正在运行的别的程序 但是肯定不是 pty 的pty 不需要pty-shell 做命令编辑器
+            this.spawn_write(`${this.line}\n`);
+            this.clear_line();
+            return;
+        }
         let {exe, params} = this.get_exec(this.line);
         this.history_line_index = -1;
         try {
@@ -817,20 +838,22 @@ export class PtyShell implements PtyShellUserMethod {
             }
             if(this.js_child_map.has(exe)) {
                 const c_ =  this.js_child_map.get(exe);
-                this.js_func_child = new c_(()=>{
-                    this.send_and_enter("");
+                this.js_func_child = new c_(this,()=>{
+                    this.send_and_enter("",true);
                     this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
                     this.close_child()
                 }, (str)=>{
-                    this.on_call(str)
+                    this.send_and_enter(str)
                 },params)
+                this.js_func_child.init()
                 return;
+            } else {
+                this.spawn(exe, params, use_noe_pty);
             }
-            this.spawn(exe, params, use_noe_pty);
             this.clear_line();
         } catch (e) {
             // console.log("子线程执行异常", e);
-            this.send_and_enter(e.message);
+            this.send_and_enter(e.message??e);
             this.exec_end_call(-1);
         }
     }
