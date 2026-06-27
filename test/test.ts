@@ -69,4 +69,9 @@ class atest {
 // ptyShell.write("aaann \r")
 // ptyShell.write(" ls \r")
 
-ptyShell.write("cd ..\r")
+async function test() {
+    await ptyShell.write("npm install -g filecat \r")
+    await ptyShell.write("ls \r")
+    console.log('done')
+}
+test()

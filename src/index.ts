@@ -827,14 +827,21 @@ export class PtyShell implements PtyShellUserMethod {
             // 1. check_exe_cmd（只调一次）
             if (this.check_exe_cmd) {
                 const v = await this.check_exe_cmd(exe_cmd, params);
-                if (v === exec_type.not) {
-                    this.send_and_enter(`not have permission to execute ${exe_cmd}`);
-                    this.clear_line();
-                    this.exec_end_call(-1);
-                    return;
-                }
-                if (v === exec_type.not_pty) {
-                    use_noe_pty = true;
+                switch (v) {
+                    case exec_type.not:
+                        this.send_and_enter(`not have permission to execute ${exe_cmd}`);
+                        this.clear_line();
+                        this.exec_end_call(-1);
+                        return;
+                    case exec_type.auto_child_process:
+                        break;
+                    case exec_type.not_pty:
+                        use_noe_pty = true;
+                        break;
+                    default:
+                        // 未知的不报错也不执行
+                        this.exec_end_call(0);
+                        return;
                 }
             }
 
@@ -889,11 +896,7 @@ export class PtyShell implements PtyShellUserMethod {
                     return;
                 } else {
                     // 子进程：组合命令需要同步等待，单命令走原有异步
-                    if (resolved_list.length > 1) {
-                        lastExitCode = await this.spawn_sync(cmd.exe_cmd, cmd.params, cmd.use_noe_pty);
-                    } else {
-                        this.spawn(cmd.exe_cmd, cmd.params, cmd.use_noe_pty);
-                    }
+                    lastExitCode = await this.spawn(cmd.exe_cmd, cmd.params, cmd.use_noe_pty);
                 }
             } catch (e: any) {
                 this.send_and_enter(e.message ?? e);
@@ -901,9 +904,8 @@ export class PtyShell implements PtyShellUserMethod {
             }
         }
         this.clear_line();
-        if (commands.length === 1) {
-            this.exec_end_call(lastExitCode === 0 ? 0 : -1);
-        }
+        this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+        this.close_child(lastExitCode);
     }
 
     /**
@@ -981,62 +983,6 @@ export class PtyShell implements PtyShellUserMethod {
         return result;
     }
 
-    /**
-     * 同步方式执行子进程（用于组合命令），返回退出码
-     */
-    private spawn_sync(exe: string, params: string[], use_noe_pty: boolean = false): Promise<number> {
-        return new Promise((resolve) => {
-            if ((use_noe_pty || this.shell_set?.has("*") || this.shell_set?.has(exe)) && this.node_pty) {
-                this.on_call(`\n\r`);
-                this.node_pty_child = this.node_pty.spawn(exe, params, {
-                    name: 'xterm-color',
-                    cols: this.cols,
-                    rows: this.rows,
-                    cwd: this.cwd,
-                    useConptyDll: false,
-                    useConpty: process.env.NODE_ENV !== "production" ? false : undefined,
-                    env: {...process.env, ...this.env},
-                });
-                this.node_pty_child.onData((data) => {
-                    this.on_call(data.toString());
-                    if (this.on_call_child_raw) {
-                        this.on_call_child_raw(data);
-                    }
-                });
-                this.node_pty_child.onExit(({exitCode, signal}) => {
-                    this.node_pty_child = null;
-                    resolve(exitCode ?? -1);
-                });
-            } else {
-                const child = child_process.spawn(exe, params, {
-                    cwd: this.cwd,
-                    env: {...process.env, ...this.env},
-                });
-                child.stdout.setEncoding('utf8');
-                child.stdout.on('data', (data) => {
-                    this.send_and_enter(data.toString());
-                    if (this.on_call_child_raw) {
-                        this.on_call_child_raw(data);
-                    }
-                });
-                child.stderr.on('data', (data) => {
-                    this.send_and_enter(data.toString());
-                    this.next_not_enter = false;
-                    if (this.on_call_child_raw) {
-                        this.on_call_child_raw(data);
-                    }
-                });
-                child.on('exit', (code) => {
-                    resolve(code ?? -1);
-                });
-                child.on('error', (error) => {
-                    this.send_and_enter(error.message);
-                    resolve(-1);
-                });
-            }
-        });
-    }
-
     private async multiple_line(data: string, enter_index: number) {
         if (!data) return;
         let num = 0; // 防止解析失败死循环
@@ -1069,7 +1015,7 @@ export class PtyShell implements PtyShellUserMethod {
         }
     }
 
-    private spawn(exe: string, params: string[], use_noe_pty = true) {
+    private async spawn(exe: string, params: string[], use_noe_pty = true):Promise<number> {
         // if (this.not_use_node_pre_cmd_exec) {
         //     this.send_and_enter(`not_use_node_pre_cmd_exec is true`);
         //     return;
@@ -1078,6 +1024,8 @@ export class PtyShell implements PtyShellUserMethod {
         // if (!this.child) {
         //     this.on_call(`\n\r`); // 先换个行
         // }
+        return new Promise(resolve => {
+
         if ((use_noe_pty || this.shell_set.has("*") || this.shell_set.has(exe)) && this.node_pty) {
             // if (!exe.includes('exe') && exe !== 'bash' && exe !== 'sh') {
             //     exe += '.exe';
@@ -1099,10 +1047,11 @@ export class PtyShell implements PtyShellUserMethod {
                 }
             });
             this.node_pty_child.onExit(({exitCode, signal}) => {
-                this.close_child(exitCode);
-                this.send_and_enter("");
-                // this.send_and_enter(`pty with ${exitCode}`);
-                this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                // this.close_child(exitCode);
+                // this.send_and_enter("");
+                this.send_and_enter(`pty with ${exitCode}`);
+                // this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                resolve(exitCode ?? -1)
             })
             // this.is_pty = true;
         } else {
@@ -1134,20 +1083,25 @@ export class PtyShell implements PtyShellUserMethod {
                 }
             });
             this.child.on('exit', (code) => {
-                this.close_child(code);
+                // this.close_child(code);
                 // if (code !== 1) {
-                //     this.send_and_enter(`process exited with code ${code}`);
-                // } else {
-                    this.send_and_enter(``);
+                    this.send_and_enter(`process exited with code ${code}`);
                 // }
-                this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                // else {
+                //     this.send_and_enter(``);
+                // }
+                // this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                resolve(code ?? -1);
             });
             this.child.on('error', (error) => {
-                this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
-                this.close_child(-1);
+                // this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
+                // this.close_child(-1);
                 this.send_and_enter(error.message);
+                resolve( -1);
             });
         }
+
+        })
     }
 
     private async exec_cmd(exe: string, params: string[]) {
