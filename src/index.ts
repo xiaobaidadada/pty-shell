@@ -799,63 +799,242 @@ export class PtyShell implements PtyShellUserMethod {
             this.clear_line();
             return;
         }
-        let {exe, params} = this.get_exec(this.line);
+
         this.history_line_index = -1;
-        try {
+
+        // 解析组合命令（支持 ; && ||），解析出的 exe_cmd/params 来自 get_exec
+        const commands = this.parse_combined_commands(this.line);
+        if (commands.length === 0) {
+            this.send_and_enter("");
+            this.clear_line();
+            return;
+        }
+
+        // 全部校验 + 解析：一次循环完成，不重复调用 check_exe_cmd / cmd_replace
+        // resolved 结构: { exe_cmd, params, separator, use_noe_pty, skip }
+        interface ResolvedCmd {
+            exe_cmd: string;
+            params: string[];
+            separator: string;
+            use_noe_pty: boolean;
+        }
+        const resolved_list: ResolvedCmd[] = [];
+
+        for (const cmd of commands) {
+            let {exe_cmd, params} = cmd;
             let use_noe_pty = false;
+
+            // 1. check_exe_cmd（只调一次）
             if (this.check_exe_cmd) {
-                // 检查外部自定义的 是否能执行某个命令
-                const v = await this.check_exe_cmd(exe, params);
-                switch (v) {
-                    case exec_type.not:
-                        this.send_and_enter(`not have permission to execute ${exe}`);
-                        this.clear_line();
-                        this.exec_end_call(-1);
-                        return;
-                    case exec_type.auto_child_process:
-                        break;
-                    case exec_type.not_pty:
-                        use_noe_pty = true;
-                        break;
-                    default:
-                        // 未知的不报错也不执行
-                        this.exec_end_call(0);
-                        return;
+                const v = await this.check_exe_cmd(exe_cmd, params);
+                if (v === exec_type.not) {
+                    this.send_and_enter(`not have permission to execute ${exe_cmd}`);
+                    this.clear_line();
+                    this.exec_end_call(-1);
+                    return;
+                }
+                if (v === exec_type.not_pty) {
+                    use_noe_pty = true;
                 }
             }
-            if(this.cmd_replace) {
-                const  r = await this.cmd_replace(exe, params);
-                exe = r.exe_cmd
+
+            // 2. cmd_replace（只调一次）
+            if (this.cmd_replace) {
+                const r = await this.cmd_replace(exe_cmd, params);
+                exe_cmd = r.exe_cmd;
                 params = r.params;
             }
-            if (this.cmd_exec_map.has(exe)) {
-                // 检测某个已经有预处理的命令 包括用户自定义的
-                await this.exec_cmd(exe, params)
-                // 不用再继续了
-                this.clear_line();
-                this.exec_end_call(0);
-                return;
-            }
-            if(this.js_child_map.has(exe)) {
-                const c_ =  this.js_child_map.get(exe);
-                this.js_func_child = new c_(this,()=>{
-                    this.send_and_enter("",true);
-                    this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
-                    this.close_child()
-                }, (str)=>{
-                    this.send_and_enter(str)
-                },params)
-                this.js_func_child.init()
-                return;
-            } else {
-                this.spawn(exe, params, use_noe_pty);
-            }
-            this.clear_line();
-        } catch (e) {
-            // console.log("子线程执行异常", e);
-            this.send_and_enter(e.message??e);
-            this.exec_end_call(-1);
+
+            resolved_list.push({
+                exe_cmd,
+                params,
+                separator: cmd.separator,
+                use_noe_pty,
+            });
         }
+
+        // 全部校验通过，按分隔符语义串行执行
+        let lastExitCode = 0;
+        for (let i = 0; i < resolved_list.length; i++) {
+            const cmd = resolved_list[i];
+
+            // 根据前一个命令的退出码和分隔符决定是否跳过当前命令
+            if (i > 0) {
+                const prevSep = resolved_list[i - 1].separator;
+                if (prevSep === '&&' && lastExitCode !== 0) continue; // 前面失败，跳过
+                if (prevSep === '||' && lastExitCode === 0) continue; // 前面成功，跳过
+            }
+
+            try {
+                if (this.cmd_exec_map.has(cmd.exe_cmd)) {
+                    await this.exec_cmd(cmd.exe_cmd, cmd.params);
+                    lastExitCode = 0;
+                } else if (this.js_child_map.has(cmd.exe_cmd)) {
+                    // js_child 异步模式，不支持在组合命令中等待
+                    if (resolved_list.length > 1) {
+                        this.send_and_enter(`\x1b[31mjs_child not supported in combined commands: ${cmd.exe_cmd}\x1b[0m`);
+                        lastExitCode = -1;
+                        continue;
+                    }
+                    const c_ = this.js_child_map.get(cmd.exe_cmd);
+                    this.js_func_child = new c_(this, () => {
+                        this.send_and_enter("", true);
+                        this.next_not_enter = false;
+                        this.close_child();
+                    }, (str) => {
+                        this.send_and_enter(str);
+                    }, cmd.params);
+                    this.js_func_child.init();
+                    this.clear_line();
+                    return;
+                } else {
+                    // 子进程：组合命令需要同步等待，单命令走原有异步
+                    if (resolved_list.length > 1) {
+                        lastExitCode = await this.spawn_sync(cmd.exe_cmd, cmd.params, cmd.use_noe_pty);
+                    } else {
+                        this.spawn(cmd.exe_cmd, cmd.params, cmd.use_noe_pty);
+                    }
+                }
+            } catch (e: any) {
+                this.send_and_enter(e.message ?? e);
+                lastExitCode = -1;
+            }
+        }
+        this.clear_line();
+        if (commands.length === 1) {
+            this.exec_end_call(lastExitCode === 0 ? 0 : -1);
+        }
+    }
+
+    /**
+     * 解析组合命令，按 ; && || 分隔，返回命令列表
+     * 支持引号内的分隔符不被拆分
+     */
+    private parse_combined_commands(line: string): Array<{ exe_cmd: string; params: string[]; separator: string }> {
+        const result: Array<{ exe_cmd: string; params: string[]; separator: string }> = [];
+        let current = '';
+        let quote: string | null = null;
+        let i = 0;
+
+        while (i < line.length) {
+            const ch = line[i];
+            
+            if (ch === '"' || ch === "'") {
+                if (quote === null) {
+                    quote = ch;
+                } else if (quote === ch) {
+                    quote = null;
+                }
+                current += ch;
+                i++;
+                continue;
+            }
+
+            if (quote !== null) {
+                current += ch;
+                i++;
+                continue;
+            }
+
+            // &&
+            if (ch === '&' && i + 1 < line.length && line[i + 1] === '&') {
+                if (current.trim()) {
+                    const r = this.get_exec(current.trim());
+                    result.push({exe_cmd: r.exe, params: r.params, separator: '&&'});
+                    current = '';
+                }
+                i += 2;
+                continue;
+            }
+
+            // ||
+            if (ch === '|' && i + 1 < line.length && line[i + 1] === '|') {
+                if (current.trim()) {
+                    const r = this.get_exec(current.trim());
+                    result.push({exe_cmd: r.exe, params: r.params, separator: '||'});
+                    current = '';
+                }
+                i += 2;
+                continue;
+            }
+
+            // ;
+            if (ch === ';') {
+                if (current.trim()) {
+                    const r = this.get_exec(current.trim());
+                    result.push({exe_cmd: r.exe, params: r.params, separator: ';'});
+                    current = '';
+                }
+                i++;
+                continue;
+            }
+
+            current += ch;
+            i++;
+        }
+
+        if (current.trim()) {
+            const r = this.get_exec(current.trim());
+            result.push({exe_cmd: r.exe, params: r.params, separator: ''});
+        }
+
+        return result;
+    }
+
+    /**
+     * 同步方式执行子进程（用于组合命令），返回退出码
+     */
+    private spawn_sync(exe: string, params: string[], use_noe_pty: boolean = false): Promise<number> {
+        return new Promise((resolve) => {
+            if ((use_noe_pty || this.shell_set?.has("*") || this.shell_set?.has(exe)) && this.node_pty) {
+                this.on_call(`\n\r`);
+                this.node_pty_child = this.node_pty.spawn(exe, params, {
+                    name: 'xterm-color',
+                    cols: this.cols,
+                    rows: this.rows,
+                    cwd: this.cwd,
+                    useConptyDll: false,
+                    useConpty: process.env.NODE_ENV !== "production" ? false : undefined,
+                    env: {...process.env, ...this.env},
+                });
+                this.node_pty_child.onData((data) => {
+                    this.on_call(data.toString());
+                    if (this.on_call_child_raw) {
+                        this.on_call_child_raw(data);
+                    }
+                });
+                this.node_pty_child.onExit(({exitCode, signal}) => {
+                    this.node_pty_child = null;
+                    resolve(exitCode ?? -1);
+                });
+            } else {
+                const child = child_process.spawn(exe, params, {
+                    cwd: this.cwd,
+                    env: {...process.env, ...this.env},
+                });
+                child.stdout.setEncoding('utf8');
+                child.stdout.on('data', (data) => {
+                    this.send_and_enter(data.toString());
+                    if (this.on_call_child_raw) {
+                        this.on_call_child_raw(data);
+                    }
+                });
+                child.stderr.on('data', (data) => {
+                    this.send_and_enter(data.toString());
+                    this.next_not_enter = false;
+                    if (this.on_call_child_raw) {
+                        this.on_call_child_raw(data);
+                    }
+                });
+                child.on('exit', (code) => {
+                    resolve(code ?? -1);
+                });
+                child.on('error', (error) => {
+                    this.send_and_enter(error.message);
+                    resolve(-1);
+                });
+            }
+        });
     }
 
     private async multiple_line(data: string, enter_index: number) {
