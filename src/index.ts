@@ -1049,7 +1049,7 @@ export class PtyShell implements PtyShellUserMethod {
             this.node_pty_child.onExit(({exitCode, signal}) => {
                 // this.close_child(exitCode);
                 // this.send_and_enter("");
-                this.send_and_enter(`pty with ${exitCode}`);
+                this.send_and_enter(`pty exited with code ${exitCode ?? -1}`);
                 // this.next_not_enter = false; // 下一次的换行输出 上一次没有换行
                 resolve(exitCode ?? -1)
             })
@@ -1085,7 +1085,7 @@ export class PtyShell implements PtyShellUserMethod {
             this.child.on('exit', (code) => {
                 // this.close_child(code);
                 // if (code !== 1) {
-                    this.send_and_enter(`process exited with code ${code}`);
+                    this.send_and_enter(`process exited with code ${code ?? -1}`);
                 // }
                 // else {
                 //     this.send_and_enter(``);
