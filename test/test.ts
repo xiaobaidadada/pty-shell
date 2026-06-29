@@ -71,8 +71,8 @@ class atest {
 
 
 async function test() {
-    await ptyShell.write("npm install -g filecat \r")
+    // await ptyShell.write("npm install -g filecat \r")
     await ptyShell.write("ls \r")
-    console.log('done')
+    // console.log('done')
 }
 test()
